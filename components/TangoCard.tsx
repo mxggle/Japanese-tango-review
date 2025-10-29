@@ -14,6 +14,7 @@ interface TangoCardProps {
   isAiLoading: boolean;
   aiError: string | null;
   blurFurigana: boolean;
+  showGemini: boolean;
 }
 
 const TangoCard: React.FC<TangoCardProps> = ({ 
@@ -27,7 +28,8 @@ const TangoCard: React.FC<TangoCardProps> = ({
   aiContent,
   isAiLoading,
   aiError,
-  blurFurigana
+  blurFurigana,
+  showGemini
 }) => {
   const cardRef = useRef<HTMLDivElement>(null);
 
@@ -64,12 +66,25 @@ const TangoCard: React.FC<TangoCardProps> = ({
             <div className="flex items-center gap-3 mt-1 text-sm text-slate-600 dark:text-slate-400">
                 <span className="bg-blue-100 text-blue-800 px-2 py-0.5 rounded-full dark:bg-blue-900 dark:text-blue-300">{word.partOfSpeech}</span>
                 <span>{word.pitchAccent}</span>
+                {word.level && (
+                  <span className="bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full dark:bg-emerald-900 dark:text-emerald-300">
+                    {word.level}
+                  </span>
+                )}
             </div>
           </div>
           <div className="flex gap-2">
-            <button onClick={onToggleAiPanel} className={`p-2 transition-colors ${isAiPanelVisible ? 'text-purple-500' : 'text-slate-400 hover:text-purple-500'}`} title="Ask Gemini Sensei">
-              <SparklesIcon className="w-6 h-6" />
-            </button>
+            {showGemini && (
+              <button
+                onClick={onToggleAiPanel}
+                className={`p-2 transition-colors ${
+                  isAiPanelVisible ? 'text-purple-500' : 'text-slate-400 hover:text-purple-500'
+                }`}
+                title="Ask Gemini Sensei"
+              >
+                <SparklesIcon className="w-6 h-6" />
+              </button>
+            )}
             <button onClick={onToggleDefinition} className="p-2 text-slate-500 hover:text-blue-600 dark:hover:text-blue-400 transition-colors" title={isDefinitionVisible ? "Hide Definition" : "Show Definition"}>
               {isDefinitionVisible ? <EyeOffIcon className="w-6 h-6" /> : <EyeIcon className="w-6 h-6" />}
             </button>
@@ -113,7 +128,7 @@ const TangoCard: React.FC<TangoCardProps> = ({
             )}
           </div>
           
-          {isAiPanelVisible && (
+          {showGemini && isAiPanelVisible && (
             <div className="mt-6 pt-4 border-t-2 border-dashed border-purple-200 dark:border-purple-800">
               <h4 className="text-sm font-bold uppercase text-purple-500 dark:text-purple-400 mb-3 flex items-center gap-2">
                 <SparklesIcon className="w-4 h-4" />

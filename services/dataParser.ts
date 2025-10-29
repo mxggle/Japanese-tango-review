@@ -10,6 +10,43 @@ const cleanHtml = (html: string): string => {
     .trim();
 };
 
+const cleanExpression = (text: string): string => {
+  if (!text) return '';
+  return text
+    .replace(/\[sound:.+?\]/g, '')
+    .replace(/<\/?ruby.*?>/g, '')
+    .replace(/<rt>.*?<\/rt>/g, '')
+    .replace(/([\u4e00-\u9faf]+)\[(.+?)\]/g, '$1')
+    .replace(/<[^>]+>/g, '')
+    .trim();
+};
+
+const TAG_PREFIX = 'eggrolls-JLPT10k-v3::';
+const TAG_COLUMN_INDEX = 36; // 1-based column: 37
+
+const parseTags = (columns: string[]): string[] => {
+  const tagColumn = columns[TAG_COLUMN_INDEX] ?? '';
+  return tagColumn
+    .split(/\s+/)
+    .map(tag => tag.trim())
+    .filter(Boolean);
+};
+
+const extractLevelFromTags = (tags: string[]): string | null => {
+  for (const tag of tags) {
+    if (!tag.startsWith(TAG_PREFIX)) continue;
+    const segments = tag.split('::').slice(1);
+    for (const segment of segments) {
+      if (!segment) continue;
+      const cleaned = segment.replace(/^[0-9]+-/, '');
+      if (/^N\d/.test(cleaned)) {
+        return cleaned;
+      }
+    }
+  }
+  return null;
+};
+
 export const parseTangoData = (rawData: string): TangoWord[] => {
   if (!rawData) {
     return [];
@@ -23,13 +60,15 @@ export const parseTangoData = (rawData: string): TangoWord[] => {
     // Basic Info
     const word: TangoWord = {
       id: columns[0] || `id-${Math.random()}`,
-      expression: cleanHtml(columns[1] || ''),
+      expression: cleanExpression(columns[1] || ''),
       pitchAccent: columns[2] || '',
       partOfSpeech: columns[3] || '',
       reading: columns[4] || '',
       definition: columns[5] || '',
       examples: [],
       related: [],
+      level: null,
+      tags: [],
     };
     
     let i = 9; // Start parsing from the first potential example/related block
@@ -70,6 +109,9 @@ export const parseTangoData = (rawData: string): TangoWord[] => {
     }
 
     if (word.id && word.expression) {
+      const tags = parseTags(columns);
+      word.tags = tags;
+      word.level = extractLevelFromTags(tags);
       words.push(word);
     }
   }

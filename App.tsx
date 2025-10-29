@@ -1,165 +1,322 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import { GoogleGenAI } from '@google/genai';
-import { TangoWord } from './types';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import { TangoWord, SearchScope, DictionaryMeta } from './types';
 import Header from './components/Header';
 import SearchBar from './components/SearchBar';
 import TangoCard from './components/TangoCard';
+import DictionarySelector from './components/DictionarySelector';
 import { parseTangoData } from './services/dataParser';
-import { rawData } from './constants/data';
+
+type DictionaryModule = {
+  rawData?: string;
+  dictionaryInfo?: {
+    id?: string;
+    title?: string;
+    description?: string;
+  };
+};
+
+type DictionaryDescriptor = DictionaryMeta & {
+  rawData: string;
+};
+
+const dictionaryModules = import.meta.glob('./constants/*.{ts,tsx}', {
+  eager: true,
+}) as Record<string, DictionaryModule>;
+
+const DICTIONARIES: DictionaryDescriptor[] = Object.entries(dictionaryModules)
+  .flatMap(([path, mod]) => {
+    if (!mod || typeof mod.rawData !== 'string') {
+      return [];
+    }
+    const fileName = path.split('/').pop() ?? path;
+    const baseId = fileName.replace(/\.[tj]sx?$/, '');
+    const info = mod.dictionaryInfo ?? {};
+    const id = info.id?.trim() || baseId;
+    const title = info.title?.trim() || baseId;
+    const description = info.description?.trim() || `Data source: ${fileName}`;
+
+    return [
+      {
+        id,
+        title,
+        description,
+        sourcePath: path,
+        rawData: mod.rawData,
+      },
+    ];
+  })
+  .sort((a, b) => a.title.localeCompare(b.title));
+
+const INITIAL_VISIBLE_COUNT = 40;
+const VISIBLE_INCREMENT = 30;
+
+const KANJI_REGEX = /[\u4e00-\u9faf]/;
+const KATAKANA_REGEX = /^[\u30a0-\u30ff\u30fb\u30fc]+$/;
+const HIRAGANA_REGEX = /^[\u3040-\u309f]+$/;
+
+const getStorageItem = (key: string): string | null => {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+  try {
+    return window.localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+};
+
+const setStorageItem = (key: string, value: string) => {
+  if (typeof window === 'undefined') {
+    return;
+  }
+  try {
+    window.localStorage.setItem(key, value);
+  } catch {
+    // Ignore storage failures
+  }
+};
+
+const removeStorageItem = (key: string) => {
+  if (typeof window === 'undefined') {
+    return;
+  }
+  try {
+    window.localStorage.removeItem(key);
+  } catch {
+    // Ignore storage failures
+  }
+};
 
 const App: React.FC = () => {
+  const [selectedDictionaryId, setSelectedDictionaryId] = useState<string | null>(
+    () => getStorageItem('selectedDictionaryId')
+  );
   const [words, setWords] = useState<TangoWord[]>([]);
+  const [levelOptions, setLevelOptions] = useState<string[]>([]);
   const [searchTerm, setSearchTerm] = useState<string>('');
-  const [wordTypeFilter, setWordTypeFilter] = useState<string>('all');
-  
-  // Furigana blur state
-  const [blurFurigana, setBlurFurigana] = useState<boolean>(() => {
-    try {
-        return localStorage.getItem('blurFurigana') === 'true';
-    } catch (e) {
-        return false;
-    }
-  });
+  const [wordTypeFilter, setWordTypeFilter] = useState<string>(() => getStorageItem('wordTypeFilter') || 'all');
+  const [levelFilter, setLevelFilter] = useState<string>(() => getStorageItem('levelFilter') || 'all');
+  const [searchMode, setSearchMode] = useState<SearchScope>(() =>
+    getStorageItem('searchMode') === 'word' ? 'word' : 'full'
+  );
+  const showGemini = false;
+  const setShowGemini = useCallback<(value: boolean | ((prev: boolean) => boolean)) => void>((_value) => {
+    // Gemini Sensei integration is disabled.
+  }, []);
+  const isGeminiAvailable = false;
 
-  const [revealedIds, setRevealedIds] = useState<Set<string>>(() => {
-    try {
-      const item = window.localStorage.getItem('revealedTangoIds');
-      return item ? new Set(JSON.parse(item)) : new Set();
-    } catch (error) {
-      return new Set();
-    }
-  });
-  const [lastWatchedId, setLastWatchedId] = useState<string | null>(() => {
-    try {
-        return window.localStorage.getItem('lastWatchedTangoId');
-    } catch(e) {
-        return null;
-    }
-  });
+  const [blurFurigana, setBlurFurigana] = useState<boolean>(() => getStorageItem('blurFurigana') === 'true');
+  const [revealedIds, setRevealedIds] = useState<Set<string>>(new Set());
+  const [lastWatchedId, setLastWatchedId] = useState<string | null>(null);
 
-  const [aiInsights, setAiInsights] = useState<Record<string, { content: string | null; isLoading: boolean; error: string | null; }>>({});
-  const [visibleAiPanels, setVisibleAiPanels] = useState<Set<string>>(new Set());
-  
-  const ai = useMemo(() => new GoogleGenAI({ apiKey: process.env.API_KEY }), []);
+  const [visibleCount, setVisibleCount] = useState<number>(INITIAL_VISIBLE_COUNT);
 
-  // Effect for furigana blur
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+  const filteredListRef = useRef<TangoWord[]>([]);
+
+  const dictionaries = useMemo(() => DICTIONARIES, []);
+
+  const selectedDictionary = useMemo(() => {
+    if (!selectedDictionaryId) {
+      return null;
+    }
+    return dictionaries.find(dict => dict.id === selectedDictionaryId) ?? null;
+  }, [selectedDictionaryId, dictionaries]);
+
   useEffect(() => {
-    try {
-        localStorage.setItem('blurFurigana', String(blurFurigana));
-    } catch(e) {
-        console.warn('Could not save blurFurigana preference to localStorage.');
+    if (selectedDictionaryId && !selectedDictionary) {
+      setSelectedDictionaryId(null);
     }
+  }, [selectedDictionaryId, selectedDictionary]);
+
+  useEffect(() => {
+    if (selectedDictionaryId) {
+      setStorageItem('selectedDictionaryId', selectedDictionaryId);
+    } else {
+      removeStorageItem('selectedDictionaryId');
+    }
+  }, [selectedDictionaryId]);
+
+  useEffect(() => {
+    if (!selectedDictionary) {
+      setWords([]);
+      setLevelOptions([]);
+      return;
+    }
+
+    const parsedData = parseTangoData(selectedDictionary.rawData);
+    setWords(parsedData);
+
+    const uniqueLevels = Array.from(
+      new Set(parsedData.map(word => word.level).filter((level): level is string => Boolean(level)))
+    ).sort((a, b) => {
+      const rank = (value: string) => {
+        const match = value.match(/^N(\d)/);
+        return match ? parseInt(match[1], 10) : Number.MAX_SAFE_INTEGER;
+      };
+      return rank(a) - rank(b);
+    });
+    setLevelOptions(uniqueLevels);
+    setLevelFilter(prev => {
+      if (prev === 'all' || uniqueLevels.includes(prev)) {
+        return prev;
+      }
+      return 'all';
+    });
+  }, [selectedDictionary]);
+
+  useEffect(() => {
+    if (!selectedDictionaryId) {
+      setRevealedIds(new Set());
+      setLastWatchedId(null);
+      return;
+    }
+
+    const revealedKey = `${selectedDictionaryId}:revealedTangoIds`;
+    const lastWatchedKey = `${selectedDictionaryId}:lastWatchedTangoId`;
+
+    const storedRevealed = getStorageItem(revealedKey);
+    if (storedRevealed) {
+      try {
+        setRevealedIds(new Set(JSON.parse(storedRevealed)));
+      } catch {
+        setRevealedIds(new Set());
+      }
+    } else {
+      setRevealedIds(new Set());
+    }
+
+    const storedLastWatched = getStorageItem(lastWatchedKey);
+    setLastWatchedId(storedLastWatched ? storedLastWatched : null);
+  }, [selectedDictionaryId]);
+
+  useEffect(() => {
+    setStorageItem('blurFurigana', String(blurFurigana));
   }, [blurFurigana]);
 
+  useEffect(() => {
+    setStorageItem('wordTypeFilter', wordTypeFilter);
+  }, [wordTypeFilter]);
 
   useEffect(() => {
-    const parsedData = parseTangoData(rawData);
-    setWords(parsedData);
-  }, []);
+    setStorageItem('levelFilter', levelFilter);
+  }, [levelFilter]);
 
   useEffect(() => {
-    try {
-      window.localStorage.setItem('revealedTangoIds', JSON.stringify(Array.from(revealedIds)));
-    } catch (error) {
-      console.error("Could not save revealed IDs to localStorage", error);
+    setStorageItem('searchMode', searchMode);
+  }, [searchMode]);
+
+  useEffect(() => {
+    if (!selectedDictionaryId) {
+      return;
     }
-  }, [revealedIds]);
+    setStorageItem(`${selectedDictionaryId}:revealedTangoIds`, JSON.stringify(Array.from(revealedIds)));
+  }, [revealedIds, selectedDictionaryId]);
 
   useEffect(() => {
-    try {
-        if (lastWatchedId) {
-            window.localStorage.setItem('lastWatchedTangoId', lastWatchedId);
-        } else {
-            window.localStorage.removeItem('lastWatchedTangoId');
+    if (!selectedDictionaryId) {
+      return;
+    }
+    if (lastWatchedId) {
+      setStorageItem(`${selectedDictionaryId}:lastWatchedTangoId`, lastWatchedId);
+    } else {
+      removeStorageItem(`${selectedDictionaryId}:lastWatchedTangoId`);
+    }
+  }, [lastWatchedId, selectedDictionaryId]);
+
+  useEffect(() => {
+    setVisibleCount(INITIAL_VISIBLE_COUNT);
+  }, [searchTerm, wordTypeFilter, levelFilter, searchMode, words]);
+
+  useEffect(() => {
+    const sentinel = sentinelRef.current;
+    if (!sentinel) {
+      return;
+    }
+
+    const observer = new IntersectionObserver(
+      entries => {
+        const [entry] = entries;
+        if (entry.isIntersecting) {
+          setVisibleCount(prev => {
+            if (prev >= words.length) {
+              return prev;
+            }
+            return Math.min(prev + VISIBLE_INCREMENT, words.length);
+          });
         }
-    } catch (e) {
-        console.warn('Could not save lastWatchedId to localStorage.');
-    }
-  }, [lastWatchedId]);
+      },
+      { root: null, rootMargin: '200px' }
+    );
 
+    observer.observe(sentinel);
+
+    return () => {
+      observer.disconnect();
+    };
+  }, [words.length]);
 
   const filteredWords = useMemo(() => {
-    const searchFiltered = searchTerm
-      ? words.filter(word =>
-          word.expression.toLowerCase().includes(searchTerm.toLowerCase()) ||
-          word.reading.toLowerCase().includes(searchTerm.toLowerCase()) ||
-          word.definition.toLowerCase().includes(searchTerm.toLowerCase())
-        )
-      : words;
+    const normalizedTerm = searchTerm.trim().toLowerCase();
 
-    if (wordTypeFilter === 'all') {
-      return searchFiltered;
-    }
+    return words.filter(word => {
+      if (normalizedTerm) {
+        if (searchMode === 'word') {
+          const expressionMatch = word.expression.toLowerCase().includes(normalizedTerm);
+          const readingMatch = word.reading.toLowerCase().includes(normalizedTerm);
+          if (!expressionMatch && !readingMatch) {
+            return false;
+          }
+        } else {
+          const searchable = [
+            word.expression,
+            word.reading,
+            word.definition,
+            word.partOfSpeech,
+            word.examples.map(ex => `${ex.jp} ${ex.cn}`).join(' '),
+            word.related.map(rel => `${rel.type} ${rel.jp} ${rel.cn}`).join(' '),
+          ]
+            .join(' ')
+            .toLowerCase();
 
-    return searchFiltered.filter(word => {
-      if (wordTypeFilter === 'kanji') {
-        // Contains at least one Kanji
-        return /[\u4e00-\u9faf]/.test(word.expression);
+          if (!searchable.includes(normalizedTerm)) {
+            return false;
+          }
+        }
       }
-      if (wordTypeFilter === 'katakana') {
-        // Consists only of Katakana characters (and ー・)
-        return /^[\u30a0-\u30ff\u30fb\u30fc]+$/.test(word.expression);
+
+      if (wordTypeFilter !== 'all') {
+        if (wordTypeFilter === 'kanji' && !KANJI_REGEX.test(word.expression)) {
+          return false;
+        }
+        if (wordTypeFilter === 'katakana' && !KATAKANA_REGEX.test(word.expression)) {
+          return false;
+        }
+        if (wordTypeFilter === 'hiragana' && !HIRAGANA_REGEX.test(word.expression)) {
+          return false;
+        }
       }
-      if (wordTypeFilter === 'hiragana') {
-        // Consists only of Hiragana characters
-        return /^[\u3040-\u309f]+$/.test(word.expression);
+
+      if (levelFilter !== 'all' && word.level !== levelFilter) {
+        return false;
       }
+
       return true;
     });
-  }, [searchTerm, words, wordTypeFilter]);
-  
-  const handleToggleAiPanel = useCallback(async (word: TangoWord) => {
-    const { id, expression, reading, partOfSpeech, definition } = word;
+  }, [words, searchTerm, searchMode, wordTypeFilter, levelFilter]);
 
-    const isOpening = !visibleAiPanels.has(id);
-    
-    setVisibleAiPanels(prev => {
-        const newSet = new Set(prev);
-        if (newSet.has(id)) {
-            newSet.delete(id);
-        } else {
-            newSet.add(id);
-        }
-        return newSet;
-    });
+  const visibleWords = useMemo(
+    () => filteredWords.slice(0, Math.min(visibleCount, filteredWords.length)),
+    [filteredWords, visibleCount]
+  );
 
-    if (isOpening && !aiInsights[id]) {
-        setAiInsights(prev => ({ ...prev, [id]: { content: null, isLoading: true, error: null } }));
+  useEffect(() => {
+    filteredListRef.current = filteredWords;
+  }, [filteredWords]);
 
-        try {
-            const prompt = `
-You are a helpful and friendly Japanese language tutor named "Gemini Sensei".
-A user wants to understand the word "${expression}" [${reading}] better.
-The word is a ${partOfSpeech} and its basic definition is: "${definition}".
-
-Please provide a concise and clear explanation for a Japanese language learner. Structure your response in English with the following sections using Markdown headings:
-
-### Deeper Meaning & Nuance
-Explain the word's nuances, common contexts, and any cultural significance if applicable. If there are similar words, briefly explain the difference.
-
-### More Examples
-Provide 2-3 new, practical example sentences. For each example, provide the Japanese sentence (with the target word in bold), its reading in furigana style (e.g., 日本[にほん]), and the English translation.
-
-### Mnemonic
-Provide a simple and memorable mnemonic to help remember the word.
-
-Keep your response friendly and encouraging!
-`;
-            
-            const response = await ai.models.generateContent({
-                model: 'gemini-2.5-flash',
-                contents: prompt,
-            });
-            const text = response.text;
-            
-            setAiInsights(prev => ({ ...prev, [id]: { content: text, isLoading: false, error: null } }));
-
-        } catch (error) {
-            console.error("Error fetching AI insight:", error);
-            setAiInsights(prev => ({ ...prev, [id]: { content: null, isLoading: false, error: 'Sorry, I had trouble thinking of an explanation. Please try again.' } }));
-        }
-    }
-  }, [visibleAiPanels, aiInsights, ai]);
+  const handleToggleAiPanel = useCallback(() => {
+    // Gemini Sensei integration is disabled.
+  }, []);
 
   const handleToggleDefinition = useCallback((id: string) => {
     setRevealedIds(prev => {
@@ -172,35 +329,79 @@ Keep your response friendly and encouraging!
       return newSet;
     });
   }, []);
-  
+
   const handleSetLastWatched = useCallback((id: string) => {
     setLastWatchedId(id);
   }, []);
 
   const scrollToLastWatched = useCallback(() => {
-    if (lastWatchedId) {
+    if (!lastWatchedId) {
+      return;
+    }
+
+    const currentList = filteredListRef.current;
+    const targetIndex = currentList.findIndex(word => word.id === lastWatchedId);
+    if (targetIndex === -1) {
+      return;
+    }
+
+    setVisibleCount(prev => {
+      if (targetIndex < prev) {
+        return prev;
+      }
+      return Math.min(currentList.length, targetIndex + VISIBLE_INCREMENT);
+    });
+
+    requestAnimationFrame(() => {
       const element = document.getElementById(lastWatchedId);
       if (element) {
         element.scrollIntoView({ behavior: 'smooth', block: 'center' });
       }
-    }
+    });
   }, [lastWatchedId]);
 
-  const toggleAll = useCallback((show: boolean) => {
-        if(show) {
-            const allIds = new Set(words.map(w => w.id));
-            setRevealedIds(allIds);
-        } else {
-            setRevealedIds(new Set());
-        }
-  }, [words]);
+  const toggleAll = useCallback(
+    (show: boolean) => {
+      if (show) {
+        const allIds = new Set(words.map(w => w.id));
+        setRevealedIds(allIds);
+      } else {
+        setRevealedIds(new Set());
+      }
+    },
+    [words]
+  );
+
+  const handleSelectDictionary = useCallback((id: string) => {
+    setSelectedDictionaryId(id);
+    setSearchTerm('');
+  }, []);
+
+  const handleRequestDictionaryChange = useCallback(() => {
+    setSelectedDictionaryId(null);
+    setSearchTerm('');
+  }, []);
+
+  if (!selectedDictionary) {
+    const selectorOptions = dictionaries.map(dict => ({
+      id: dict.id,
+      title: dict.title,
+      description: dict.description,
+    }));
+    return (
+      <DictionarySelector
+        dictionaries={selectorOptions}
+        onSelect={handleSelectDictionary}
+      />
+    );
+  }
 
   return (
     <div className="min-h-screen">
       <Header />
       <div className="sticky top-0 z-20">
-        <SearchBar 
-          searchTerm={searchTerm} 
+        <SearchBar
+          searchTerm={searchTerm}
           setSearchTerm={setSearchTerm}
           scrollToLastWatched={scrollToLastWatched}
           toggleAll={toggleAll}
@@ -208,35 +409,58 @@ Keep your response friendly and encouraging!
           setBlurFurigana={setBlurFurigana}
           wordTypeFilter={wordTypeFilter}
           setWordTypeFilter={setWordTypeFilter}
+          levelFilter={levelFilter}
+          setLevelFilter={setLevelFilter}
+          levelOptions={levelOptions}
+          searchMode={searchMode}
+          setSearchMode={setSearchMode}
+          showGemini={showGemini}
+          setShowGemini={setShowGemini}
+          isGeminiAvailable={isGeminiAvailable}
+          currentDictionaryTitle={selectedDictionary.title}
+          onRequestDictionaryChange={handleRequestDictionaryChange}
         />
       </div>
-      
+
       <main className="max-w-7xl mx-auto p-4">
         {words.length === 0 ? (
           <div className="text-center text-slate-500">Loading data...</div>
         ) : filteredWords.length > 0 ? (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {filteredWords.map(word => (
-              <TangoCard
-                key={word.id}
-                word={word}
-                isDefinitionVisible={revealedIds.has(word.id)}
-                onToggleDefinition={() => handleToggleDefinition(word.id)}
-                isLastWatched={lastWatchedId === word.id}
-                onSetLastWatched={() => handleSetLastWatched(word.id)}
-                isAiPanelVisible={visibleAiPanels.has(word.id)}
-                onToggleAiPanel={() => handleToggleAiPanel(word)}
-                aiContent={aiInsights[word.id]?.content ?? null}
-                isAiLoading={aiInsights[word.id]?.isLoading ?? false}
-                aiError={aiInsights[word.id]?.error ?? null}
-                blurFurigana={blurFurigana}
-              />
-            ))}
-          </div>
+          <>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {visibleWords.map(word => (
+                <TangoCard
+                  key={word.id}
+                  word={word}
+                  isDefinitionVisible={revealedIds.has(word.id)}
+                  onToggleDefinition={() => handleToggleDefinition(word.id)}
+                  isLastWatched={lastWatchedId === word.id}
+                  onSetLastWatched={() => handleSetLastWatched(word.id)}
+                  isAiPanelVisible={false}
+                  onToggleAiPanel={handleToggleAiPanel}
+                  aiContent={null}
+                  isAiLoading={false}
+                  aiError={null}
+                  blurFurigana={blurFurigana}
+                  showGemini={showGemini}
+                />
+              ))}
+            </div>
+            {filteredWords.length > 0 && (
+              <div
+                ref={visibleCount < filteredWords.length ? sentinelRef : null}
+                className="py-6 text-center text-slate-400 text-sm"
+              >
+                {visibleCount < filteredWords.length ? 'Loading more words...' : 'You have reached the end.'}
+              </div>
+            )}
+          </>
         ) : (
           searchTerm && (
             <div className="text-center text-slate-500 py-10">
-                <p className="text-lg">No words found for "{searchTerm}".</p>
+              <p className="text-lg">
+                No words found for &quot;{searchTerm}&quot;.
+              </p>
             </div>
           )
         )}
