@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Japanese Tango Reviewer</title>
+    <script>
+      // Prevents flash of light theme
+      if (localStorage.getItem('theme') === 'dark' || (!('theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+        document.documentElement.setAttribute('data-theme', 'dark');
+      } else {
+        document.documentElement.removeAttribute('data-theme');
+      }
+    </script>
+    <script>
+      tailwind.config = {
+        darkMode: ['selector', '[data-theme="dark"]']
+      }
+    </script>
+    <script src="https://cdn.tailwindcss.com"></script>
+<script type="importmap">
+{
+  "imports": {
+    "react-dom/": "https://aistudiocdn.com/react-dom@^19.2.0/",
+    "react/": "https://aistudiocdn.com/react@^19.2.0/",
+    "react": "https://aistudiocdn.com/react@^19.2.0",
+    "@google/genai": "https://aistudiocdn.com/@google/genai/dist/index.js"
+  }
+}
+</script>
+<style>
+    /* Furigana Blur Styles */
+    .furigana-blur ruby rt {
+        color: transparent;
+        text-shadow: 0 0 5px currentColor;
+        transition: all 0.2s ease-in-out;
+        cursor: pointer;
+        user-select: none;
+    }
+    .furigana-blur ruby:hover rt,
+    .furigana-blur ruby:focus rt,
+    .furigana-blur ruby:active rt {
+        color: inherit;
+        text-shadow: none;
+    }
+</style>
+</head>
+<body class="bg-slate-100 dark:bg-slate-900 text-slate-800 dark:text-slate-200">
+    <div id="root"></div>
+    <script type="module" src="/index.tsx"></script>
+</body>
+</html>

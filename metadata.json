@@ -1,0 +1,5 @@
+{
+  "name": "Japanese Tango Reviewer",
+  "description": "A web application to review and memorize Japanese vocabulary. It allows users to browse a list of words, toggle definitions, search for specific terms, and mark their last reviewed position.",
+  "requestFramePermissions": []
+}
